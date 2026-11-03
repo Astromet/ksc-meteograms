@@ -1,4 +1,4 @@
-// KSC time-height meteograms: GFS / ECMWF / UKMET from Open-Meteo, NAM from Iowa State BUFKIT profiles.
+// KSC time-height meteograms: GFS, ECMWF, UKMET, ICON, GEM and HRRR from Open-Meteo.
 // RH >=70/80/90% shaded, isotherms +5..-20 C (0 C blue), wind barbs colored by speed, red NOW line.
 async function buildMeteogram(opts) {
   const o = Object.assign({ lat: 28.4676, lon: -80.5668, site: 'KXMR', name: 'Cape Canaveral SFS', days: 7, W: 1600, H: 900, model: 'gfs' }, opts || {});
@@ -6,15 +6,16 @@ async function buildMeteogram(opts) {
     ecmwf: { label: 'ECMWF', api: 'ecmwf', mdl: 'ecmwf_ifs025', meta: 'ecmwf_ifs025', src: 'ECMWF IFS 0.25° open data via Open-Meteo', L: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150] },
     gfs: { label: 'GFS', api: 'gfs', mdl: 'gfs_global', meta: 'ncep_gfs025', src: 'NOAA GFS 0.25° via Open-Meteo', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] },
     ukmo: { label: 'UKMET', api: 'forecast', mdl: 'ukmo_global_deterministic_10km', meta: 'ukmo_global_deterministic_10km', src: 'UK Met Office Global 10 km via Open-Meteo', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] },
-    nam: { label: 'NAM', src: 'NOAA NAM 12 km (BUFKIT profile) via Iowa State Univ.', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] } };
+    icon: { label: 'ICON', api: 'dwd-icon', mdl: 'icon_global', meta: 'dwd_icon', src: 'DWD ICON Global 13 km via Open-Meteo', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] },
+    gem: { label: 'GEM', api: 'gem', mdl: 'gem_global', meta: 'cmc_gem_gdps', src: 'ECCC GEM Global 15 km via Open-Meteo', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] },
+    hrrr: { label: 'HRRR', api: 'gfs', mdl: 'ncep_hrrr_conus', meta: 'ncep_hrrr_conus', src: 'NOAA HRRR 3 km via Open-Meteo', L: [1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150] } };
   const M = MODELS[o.model] || MODELS.gfs;
-  const L = M.L;
+  let L = M.L;
   const ISO = [5, -5, -10, -15, -20];
   const V = ['temperature', 'relative_humidity', 'wind_speed', 'wind_direction', 'geopotential_height'];
   const hourly = V.flatMap(v => L.map(l => `${v}_${l}hPa`)).join(',');
   const url = `https://api.open-meteo.com/v1/${M.api}?latitude=${o.lat}&longitude=${o.lon}&hourly=${hourly}&models=${M.mdl}&forecast_days=${o.days + 1}&wind_speed_unit=kn&timezone=GMT`;
   let d = null, lastErr = '', run = null;
-  if (o.model === 'nam') { const nb = await loadNamBufkit(L); d = nb.d; run = nb.run; o.days = Math.min(o.days, nb.hours / 24); }
 
   for (let k = 0; k < 4 && !d; k++) {
     if (k) await new Promise(r => setTimeout(r, 10000 * k));
@@ -27,13 +28,19 @@ async function buildMeteogram(opts) {
   }
   if (!d) throw new Error(`Open-Meteo ${M.api} failed after retries - ${lastErr}`);
   if (d.error) throw new Error(d.reason || 'Open-Meteo error');
-  if (o.model !== 'nam') try { const ac2 = new AbortController(); setTimeout(() => ac2.abort(), 30000); const m = await fetch(`https://api.open-meteo.com/data/${M.meta}/static/meta.json`, {signal: ac2.signal}).then(r => r.json()); run = new Date(m.last_run_initialisation_time * 1000); } catch (e) {}
+  // keep only the pressure levels this model actually provides
+  L = L.filter(l => (d.hourly[`temperature_${l}hPa`] || []).some(v => v != null));
+  if (L.length < 5) throw new Error('model returned too few pressure levels');
+  try { const ac2 = new AbortController(); setTimeout(() => ac2.abort(), 30000); const m = await fetch(`https://api.open-meteo.com/data/${M.meta}/static/meta.json`, {signal: ac2.signal}).then(r => r.json()); run = new Date(m.last_run_initialisation_time * 1000); } catch (e) {}
   // 3-hourly from run time (or start of day) for `days` days
   const times = d.hourly.time.map(t => new Date(t + ':00Z'));
   const t0 = run ? run.getTime() : times[0].getTime();
   const idx = [];
   times.forEach((t, i) => { const dt = (t.getTime() - t0) / 3600e3; if (dt >= 0 && dt <= o.days * 24 && t.getUTCHours() % 3 === 0 && d.hourly[`temperature_850hPa`][i] != null) idx.push(i); });
   const T = idx.map(i => times[i]);
+  if (T.length < 3) throw new Error('no forecast data yet for the latest run');
+  const spanH = Math.round((T[T.length - 1].getTime() - t0) / 3600e3);
+  if (spanH < o.days * 24 - 3) o.days = spanH / 24;
   const g = v => L.map(l => idx.map(i => d.hourly[`${v}_${l}hPa`][i]));
   const F = { t: g('temperature'), rh: g('relative_humidity'), ws: g('wind_speed'), wd: g('wind_direction'), z: g('geopotential_height') };
 
@@ -168,7 +175,7 @@ async function buildMeteogram(opts) {
   const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const rs = run ? `${pad(run.getUTCHours())}Z ${pad(run.getUTCDate())} ${mon[run.getUTCMonth()]} ${run.getUTCFullYear()}` : 'latest run';
   c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.font = 'bold 19px Arial'; c.fillStyle = '#000';
-  c.fillText(`${M.label} ${rs}  |  ${o.site} ${o.name}  |  ${o.days >= 1 && Number.isInteger(o.days) ? o.days + '-Day' : Math.round(o.days * 24) + '-Hour'} Time-Height Section`, X0, 26);
+  c.fillText(`${M.label} ${rs}  |  ${o.site} ${o.name}  |  ${o.days >= 5 ? Math.round(o.days) + '-Day' : Math.round(o.days * 24) + '-Hour'} Time-Height Section`, X0, 26);
   c.font = '13px Arial'; c.fillStyle = '#333';
   c.fillText(`Grid point ${d.latitude.toFixed(2)}N ${Math.abs(d.longitude).toFixed(2)}W  •  Times UTC  •  Data: ${M.src}`, X0, 46);
   // legend (right of title)
@@ -178,51 +185,5 @@ async function buildMeteogram(opts) {
   c.strokeStyle = '#d7191c'; c.setLineDash([7, 5]); c.lineWidth = 1.2; c.beginPath(); c.moveTo(lx, ly - 4); c.lineTo(lx + 24, ly - 4); c.stroke(); c.setLineDash([]); c.fillStyle = '#000'; c.fillText('+5 to -20 °C', lx + 28, ly); lx += 28 + c.measureText('+5 to -20 °C').width + 12;
   c.strokeStyle = '#1f3fd6'; c.lineWidth = 2.2; c.beginPath(); c.moveTo(lx, ly - 4); c.lineTo(lx + 24, ly - 4); c.stroke(); c.fillStyle = '#000'; c.fillText('0°C', lx + 28, ly); lx += 28 + c.measureText('0°C').width + 14;
   for (const [col, lab] of [['#111', '<20'], ['#f07800', '20-39'], ['#c8102e', '40-59'], ['#7b2fbe', '60+ kt']]) { c.fillStyle = col; c.font = 'bold 12px Arial'; c.fillText(lab, lx, ly); lx += c.measureText(lab).width + 8; }
-  return { canvas: cv, run, url };
-}
-
-
-// NAM point profiles from the Iowa State BUFKIT archive, interpolated to pressure levels.
-async function loadNamBufkit(L, stn = 'xmr') {
-  const pad = n => String(n).padStart(2, '0');
-  let txt = null, run = null;
-  const now = new Date();
-  for (let back = 0; back <= 36 && !txt; back += 6) {
-    const t = new Date(now.getTime() - back * 3600e3); const cyc = Math.floor(t.getUTCHours() / 6) * 6;
-    const u = `https://mtarchive.geol.iastate.edu/${t.getUTCFullYear()}/${pad(t.getUTCMonth() + 1)}/${pad(t.getUTCDate())}/bufkit/${pad(cyc)}/nam/nam_${stn}.buf`;
-    try { const r = await fetch(u, { cache: 'no-store' }); if (r.ok) { const b = await r.text(); if (b.length > 300000 && b.includes('STID')) { txt = b; run = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), cyc)); } } } catch (e) {}
-  }
-  if (!txt) throw new Error('NAM BUFKIT profile not found');
-  const blocks = txt.split(/STID\s*=/).slice(1);
-  const time = [], H = {}; const names = ['temperature', 'relative_humidity', 'wind_speed', 'wind_direction', 'geopotential_height'];
-  names.forEach(n => L.forEach(l => H[`${n}_${l}hPa`] = []));
-  let lat = 28.57, lon = -80.68, hours = 0;
-  for (const b of blocks) {
-    const tm = b.match(/TIME\s*=\s*(\d{2})(\d{2})(\d{2})\/(\d{2})(\d{2})/); if (!tm) continue;
-    const la = b.match(/SLAT\s*=\s*(-?[\d.]+)/), lo = b.match(/SLON\s*=\s*(-?[\d.]+)/); if (la) lat = +la[1]; if (lo) lon = +lo[1];
-    const dt = new Date(Date.UTC(2000 + +tm[1], +tm[2] - 1, +tm[3], +tm[4]));
-    const body = b.split(/CFRL\s+HGHT/)[1]; if (!body) continue;
-    const nums = body.trim().split(/\s+/).map(Number).filter(v => !Number.isNaN(v));
-    const lev = []; for (let i = 0; i + 9 < nums.length; i += 10) lev.push({ p: nums[i], t: nums[i + 1], td: nums[i + 3], dir: nums[i + 5], spd: nums[i + 6], z: nums[i + 9] });
-    if (lev.length < 5) continue;
-    time.push(`${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}:00`);
-    hours = Math.max(hours, (dt - run) / 3600e3);
-    const es = T => 6.112 * Math.exp(17.67 * T / (T + 243.5));
-    for (const l of L) {
-      let k = lev.findIndex((v, i) => i < lev.length - 1 && v.p >= l && lev[i + 1].p <= l);
-      if (k < 0 || lev[k].t < -900 || lev[k + 1].t < -900) { names.forEach(n => H[`${n}_${l}hPa`].push(null)); continue; }
-      const a = lev[k], c = lev[k + 1], f = (Math.log(a.p) - Math.log(l)) / (Math.log(a.p) - Math.log(c.p));
-      const lin = (x, y) => x + (y - x) * f;
-      const T = lin(a.t, c.t), Td = lin(a.td, c.td);
-      const ua = -a.spd * Math.sin(a.dir * Math.PI / 180), va = -a.spd * Math.cos(a.dir * Math.PI / 180);
-      const uc = -c.spd * Math.sin(c.dir * Math.PI / 180), vc = -c.spd * Math.cos(c.dir * Math.PI / 180);
-      const u = lin(ua, uc), v = lin(va, vc);
-      H[`temperature_${l}hPa`].push(T);
-      H[`relative_humidity_${l}hPa`].push(Math.max(0, Math.min(100, 100 * es(Td) / es(T))));
-      H[`wind_speed_${l}hPa`].push(Math.hypot(u, v));
-      H[`wind_direction_${l}hPa`].push((Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360);
-      H[`geopotential_height_${l}hPa`].push(lin(a.z, c.z));
-    }
-  }
-  return { d: { latitude: lat, longitude: lon, hourly: { time, ...H } }, run, hours };
+  return { canvas: cv, run, url, hours: Math.round(o.days * 24) };
 }

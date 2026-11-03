@@ -52,19 +52,21 @@ figure canvas{display:block;width:100%;min-width:900px;height:auto}
   <div class="bar" role="tablist" aria-label="Model">
     <button class="tab" role="tab" id="t-gfs" aria-selected="true" data-k="gfs">GFS<small id="s-gfs">7 days</small></button>
     <button class="tab" role="tab" id="t-ecmwf" aria-selected="false" data-k="ecmwf">ECMWF<small id="s-ecmwf">7 days</small></button>
-    <button class="tab" role="tab" id="t-ukmo" aria-selected="false" data-k="ukmo">UKMET<small id="s-ukmo">~6.5 days</small></button>
-    <button class="tab" role="tab" id="t-nam" aria-selected="false" data-k="nam">NAM<small id="s-nam">84 hours</small></button>
+    <button class="tab" role="tab" id="t-ukmo" aria-selected="false" data-k="ukmo">UKMET<small id="s-ukmo">~7 days</small></button>
+    <button class="tab" role="tab" id="t-icon" aria-selected="false" data-k="icon">ICON<small id="s-icon">7 days</small></button>
+    <button class="tab" role="tab" id="t-gem" aria-selected="false" data-k="gem">GEM<small id="s-gem">7 days</small></button>
+    <button class="tab" role="tab" id="t-hrrr" aria-selected="false" data-k="hrrr">HRRR<small id="s-hrrr">48 hours</small></button>
     <button class="btn" id="refresh" type="button">Refresh data</button>
   </div>
 
   <figure id="fig"><div class="msg" id="msg">Fetching model data…</div></figure>
 
-  <p class="note">RH ≥70/80/90% shaded green, isotherms +5 to −20 °C (0 °C in blue), wind barbs colored by speed, and the red <span class="now">NOW</span> line at the current time. Every chart is drawn in your browser from the newest run available when the page opens. <b>GFS, ECMWF and UKMET</b> (Met Office Global 10 km) come from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. <b>NAM</b> comes from the NAM 12 km BUFKIT profile for XMR in the <a href="https://mtarchive.geol.iastate.edu/" target="_blank" rel="noopener">Iowa State archive</a>, interpolated to the same pressure levels; it runs out to 84 hours.</p>
+  <p class="note">RH ≥70/80/90% shaded green, isotherms +5 to −20 °C (0 °C in blue), wind barbs colored by speed, and the red <span class="now">NOW</span> line at the current time. Every chart is drawn in your browser from the newest run available when the page opens. All six models come from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>: <b>GFS</b> (NOAA), <b>ECMWF</b> IFS, <b>UKMET</b> (Met Office Global 10 km), <b>ICON</b> (DWD Global), <b>GEM</b> (Environment Canada Global) and <b>HRRR</b> (NOAA 3 km, 48 hours). Each chart uses the pressure levels that model provides.</p>
 </div>
 
 <script src="meteogram.js"></script>
 <script>
-const MODELS = ['gfs', 'ecmwf', 'ukmo', 'nam'];
+const MODELS = ['gfs', 'ecmwf', 'ukmo', 'icon', 'gem', 'hrrr'];
 const cache = {};
 const fig = document.getElementById('fig'), msg = document.getElementById('msg');
 const tabs = [...document.querySelectorAll('.tab')];
@@ -74,8 +76,8 @@ try { const k = localStorage.getItem('mg-model'); if (MODELS.includes(k)) curren
 
 function build(m) {
   if (!cache[m]) cache[m] = buildMeteogram({ model: m, W: 1600, H: 889 }).then(r => {
-    if (r.run) document.getElementById('s-' + m).textContent =
-      `${pad(r.run.getUTCHours())}Z run · ${m === 'nam' ? '84 hours' : m === 'ukmo' ? '~6.5 days' : '7 days'}`;
+    const len = r.hours >= 120 ? Math.round(r.hours / 24) + ' days' : r.hours + ' hours';
+    document.getElementById('s-' + m).textContent = (r.run ? `${pad(r.run.getUTCHours())}Z run · ` : '') + len;
     return r;
   }).catch(e => { delete cache[m]; throw e; });
   return cache[m];
@@ -107,9 +109,9 @@ document.querySelector('.bar').addEventListener('keydown', e => {
   const i = MODELS.indexOf(current), n = MODELS[(i + (e.key === 'ArrowRight' ? 1 : MODELS.length - 1)) % MODELS.length];
   show(n); document.getElementById('t-' + n).focus();
 });
-document.getElementById('refresh').addEventListener('click', () => { for (const k in cache) delete cache[k]; stamp(); show(current); MODELS.forEach(m => m !== current && build(m).catch(() => {})); });
-stamp(); show(current);
-MODELS.forEach(m => m !== current && build(m).catch(() => {}));
+document.getElementById('refresh').addEventListener('click', () => { for (const k in cache) delete cache[k]; stamp(); show(current).then(prefetch); });
+async function prefetch() { for (const m of MODELS) if (m !== current) { try { await build(m); } catch (e) {} } }
+stamp(); show(current).then(prefetch);
 </script>
 </body>
 </html>
