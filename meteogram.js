@@ -34,7 +34,8 @@ async function buildMeteogram(opts) {
   try { const ac2 = new AbortController(); setTimeout(() => ac2.abort(), 30000); const m = await fetch(`https://api.open-meteo.com/data/${M.meta}/static/meta.json`, {signal: ac2.signal}).then(r => r.json()); run = new Date(m.last_run_initialisation_time * 1000); } catch (e) {}
   // 3-hourly from run time (or start of day) for `days` days
   const times = d.hourly.time.map(t => new Date(t + ':00Z'));
-  const t0 = run ? run.getTime() : times[0].getTime();
+  if (run && Date.now() - run.getTime() > 36 * 3600e3) run = null; // stale run time from the API: ignore it
+  const t0 = run ? run.getTime() : Math.floor((Date.now() - 3 * 3600e3) / (3 * 3600e3)) * 3 * 3600e3;
   const idx = [];
   times.forEach((t, i) => { const dt = (t.getTime() - t0) / 3600e3; if (dt >= 0 && dt <= o.days * 24 && t.getUTCHours() % 3 === 0 && d.hourly[`temperature_850hPa`][i] != null) idx.push(i); });
   const T = idx.map(i => times[i]);
